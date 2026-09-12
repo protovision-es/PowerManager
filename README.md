@@ -10,7 +10,7 @@ An ESP32-based power management system for remotely restarting network gear. It 
 - **Ping monitor** — automatically restarts the router when the internet connection drops
 - **Web dashboard** — responsive, auto-refreshing every 3 seconds, with a light/dark theme, live restart countdowns, connection-loss detection, and confirmation prompts before restarting a relay. Built with plain HTML/CSS/JavaScript — no frameworks, no build step, no CDN
 - **API reference page** — a built-in `/api-doc` page listing every endpoint with ready-to-copy URLs
-- **Bicolor status LED** — one color blinks to show the firmware is alive, the other lights up solid while any relay is mid-restart
+- **Status LED** — blinks continuously as a heartbeat, and switches to solid ON while any relay is mid-restart
 - **WiFi** — static IP with automatic reconnection
 
 ## Hardware
@@ -31,17 +31,16 @@ An ESP32-based power management system for remotely restarting network gear. It 
 
 Adjust these two if your relay board is active-low.
 
-### Bicolor status LED
+### Status LED
 
 | Element | GPIO (`config.h`) |
 |---------|---------------------|
-| "Cycle" color (blinks) | `STATUS_LED_CYCLE_PIN` (2) |
-| "Restart" color (solid while a relay is restarting) | `STATUS_LED_RESTART_PIN` (4) |
+| Status LED | `STATUS_LED_PIN` (2) |
 
-Wiring: each color of the bicolor LED with its own resistor (330 ohm) between its GPIO and GND (or to a common 3V3 anode, depending on the LED type).
+Wiring: a single LED with its own resistor (330 ohm) between `STATUS_LED_PIN` and GND.
 
-- The **cycle** color blinks continuously while the firmware is running (a heartbeat indicator).
-- The **restart** color turns on solid as soon as **any** relay enters a restart cycle (off, waiting to turn back on) and turns off once every relay is back ON.
+- Normally, the LED **blinks continuously** while the firmware is running (a heartbeat indicator), toggling every `STATUS_LED_BLINK_INTERVAL` ms.
+- As soon as **any** relay enters a restart cycle (off, waiting to turn back on), the LED switches to **solid ON**, and goes back to blinking once every relay is back ON.
 
 ## Getting Started
 
@@ -49,7 +48,7 @@ Wiring: each color of the bicolor LED with its own resistor (330 ohm) between it
 
 - [PlatformIO](https://platformio.org/) (VS Code extension or CLI)
 - An ESP32 dev board (tested with `esp32doit-devkit-v1`)
-- 4-channel relay board, a bicolor LED, and whatever equipment you want to manage
+- 4-channel relay board, a status LED, and whatever equipment you want to manage
 
 ### 1. Clone and configure
 
@@ -89,9 +88,8 @@ All configuration happens at compile time in `include/config.h`. There's no file
 ### Status LED
 
 ```c
-#define STATUS_LED_CYCLE_PIN      2      // Color 1: cycle blink
-#define STATUS_LED_CYCLE_INTERVAL 100    // ms between each blink
-#define STATUS_LED_RESTART_PIN    4      // Color 2: solid during a relay restart
+#define STATUS_LED_PIN            2      // GPIO for the status LED
+#define STATUS_LED_BLINK_INTERVAL 100    // ms between each blink (heartbeat)
 ```
 
 ### WiFi

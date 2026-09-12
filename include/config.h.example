@@ -27,13 +27,12 @@
 #define WIFI_DNS2           "1.1.1.1"
 #define WIFI_CONNECT_TIMEOUT 15000
 
-// --- Bicolor status LED (2 pins, 2 colors) ---
-// "Cycle" color: blinks continuously while the program is alive
-// "Restart" color: stays ON (solid) while any relay is currently
-// in the middle of a restart (relay off, waiting to turn back on)
-#define STATUS_LED_CYCLE_PIN      2      // GPIO for color 1 (cycle / heartbeat)
-#define STATUS_LED_CYCLE_INTERVAL 100    // ms between each blink
-#define STATUS_LED_RESTART_PIN    4      // GPIO for color 2 (restart in progress)
+// --- Status LED (single pin) ---
+// Blinks continuously (heartbeat) while the program is alive.
+// Switches to solid ON while any relay is currently in the middle
+// of a restart (relay off, waiting to turn back on).
+#define STATUS_LED_PIN            2      // GPIO for the status LED
+#define STATUS_LED_BLINK_INTERVAL 100    // ms between each blink (heartbeat)
 
 // --- NTP ---
 #define NTP_SERVER          "pool.ntp.org"

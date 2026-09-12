@@ -11,27 +11,28 @@
 #include "log.h"
 #include "webserver.h"
 
-static bool cycleLedState = false;
-static unsigned long lastCycleToggle = 0;
+static bool ledBlinkState = false;
+static unsigned long lastLedToggle = 0;
 
 void statusLedInit() {
-    pinMode(STATUS_LED_CYCLE_PIN, OUTPUT);
-    pinMode(STATUS_LED_RESTART_PIN, OUTPUT);
-    digitalWrite(STATUS_LED_CYCLE_PIN, LOW);
-    digitalWrite(STATUS_LED_RESTART_PIN, LOW);
+    pinMode(STATUS_LED_PIN, OUTPUT);
+    digitalWrite(STATUS_LED_PIN, LOW);
 }
 
 void statusLedUpdate() {
-    // Color "ciclo": parpadeo continuo mientras el programa esta vivo
-    unsigned long now = millis();
-    if (now - lastCycleToggle >= STATUS_LED_CYCLE_INTERVAL) {
-        lastCycleToggle = now;
-        cycleLedState = !cycleLedState;
-        digitalWrite(STATUS_LED_CYCLE_PIN, cycleLedState ? HIGH : LOW);
+    // While any relay is restarting, keep the LED solid ON.
+    if (relayAnyRestarting()) {
+        digitalWrite(STATUS_LED_PIN, HIGH);
+        return;
     }
 
-    // Color "reinicio": fijo (ON) mientras algun rele esta reiniciando
-    digitalWrite(STATUS_LED_RESTART_PIN, relayAnyRestarting() ? HIGH : LOW);
+    // Otherwise, blink continuously as a heartbeat (program is alive).
+    unsigned long now = millis();
+    if (now - lastLedToggle >= STATUS_LED_BLINK_INTERVAL) {
+        lastLedToggle = now;
+        ledBlinkState = !ledBlinkState;
+        digitalWrite(STATUS_LED_PIN, ledBlinkState ? HIGH : LOW);
+    }
 }
 
 const char* wifiStatusStr(wl_status_t s) {
