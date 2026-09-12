@@ -1,0 +1,170 @@
+#ifndef CONFIG_H
+#define CONFIG_H
+
+// ============================================================
+// POWERMANAGER - CONFIGURATION EXAMPLE
+// Device restart / power management system
+// Everything is ON by default. Relays only turn off to restart
+// a device (OFF X seconds -> ON)
+//
+// HOW TO USE THIS FILE:
+//   1. Copy it to "config.h" in this same folder:
+//        cp config.h.example config.h
+//   2. Edit config.h with your own WiFi, relays, WoL devices,
+//      schedules and ping settings.
+//   3. config.h is gitignored on purpose so your WiFi password
+//      and other personal data never get committed. Only this
+//      "config.h.example" file should be shared/versioned.
+// ============================================================
+
+// --- WiFi ---
+#define WIFI_SSID           "YourWiFiSSID"
+#define WIFI_PASSWORD       "YourWiFiPassword"
+#define WIFI_IP             "192.168.1.50"
+#define WIFI_GATEWAY        "192.168.1.1"
+#define WIFI_SUBNET         "255.255.255.0"
+#define WIFI_DNS1           "8.8.8.8"
+#define WIFI_DNS2           "1.1.1.1"
+#define WIFI_CONNECT_TIMEOUT 15000
+
+// --- Bicolor status LED (2 pins, 2 colors) ---
+// "Cycle" color: blinks continuously while the program is alive
+// "Restart" color: stays ON (solid) while any relay is currently
+// in the middle of a restart (relay off, waiting to turn back on)
+#define STATUS_LED_CYCLE_PIN      2      // GPIO for color 1 (cycle / heartbeat)
+#define STATUS_LED_CYCLE_INTERVAL 100    // ms between each blink
+#define STATUS_LED_RESTART_PIN    4      // GPIO for color 2 (restart in progress)
+
+// --- NTP ---
+#define NTP_SERVER          "pool.ntp.org"
+#define NTP_GMT_OFFSET      0
+
+// --- Web Server ---
+#define WEB_PORT            80
+
+// ============================================================
+// RELAYS
+// Each relay has its own restart time (seconds it stays off
+// before turning back on)
+// ============================================================
+#define RELAY_COUNT         4
+#define RELAY_ACTIVE        HIGH
+#define RELAY_INACTIVE      LOW
+
+// Relay 1
+#define RELAY_0_PIN         16
+#define RELAY_0_NAME        "Router"
+#define RELAY_0_RESTART_SEC 10      // 10 seconds off to restart
+
+// Relay 2
+#define RELAY_1_PIN         17
+#define RELAY_1_NAME        "Server"
+#define RELAY_1_RESTART_SEC 15      // 15 seconds
+
+// Relay 3
+#define RELAY_2_PIN         18
+#define RELAY_2_NAME        "NAS"
+#define RELAY_2_RESTART_SEC 20      // 20 seconds
+
+// Relay 4
+#define RELAY_3_PIN         19
+#define RELAY_3_NAME        "Switch"
+#define RELAY_3_RESTART_SEC 5       // 5 seconds
+
+// ============================================================
+// WAKE ON LAN (max 5 devices)
+// ============================================================
+#define WOL_MAX_DEVICES     5
+#define WOL_SEND_REPEAT     3
+#define WOL_SEND_DELAY      100
+
+#define WOL_0_NAME          "My Desktop PC"
+#define WOL_0_MAC           "AA:BB:CC:DD:EE:FF"
+
+#define WOL_1_NAME          ""
+#define WOL_1_MAC           ""
+
+#define WOL_2_NAME          ""
+#define WOL_2_MAC           ""
+
+#define WOL_3_NAME          ""
+#define WOL_3_MAC           ""
+
+#define WOL_4_NAME          ""
+#define WOL_4_MAC           ""
+
+// ============================================================
+// SCHEDULED RESTARTS (max 10)
+// Each entry means "restart this relay at this time"
+// ============================================================
+#define SCHEDULE_MAX        10
+
+// Restart 1: Router restarts at 4:00 AM
+#define SCHED_0_ENABLED     true
+#define SCHED_0_RELAY       0
+#define SCHED_0_HOUR        4
+#define SCHED_0_MIN         0
+
+// Restart 2: Server restarts at 5:00 AM
+#define SCHED_1_ENABLED     false
+#define SCHED_1_RELAY       1
+#define SCHED_1_HOUR        5
+#define SCHED_1_MIN         0
+
+// Restart 3
+#define SCHED_2_ENABLED     false
+#define SCHED_2_RELAY       1
+#define SCHED_2_HOUR        0
+#define SCHED_2_MIN         0
+
+// Restart 4
+#define SCHED_3_ENABLED     false
+#define SCHED_3_RELAY       1
+#define SCHED_3_HOUR        0
+#define SCHED_3_MIN         0
+
+// Restart 5
+#define SCHED_4_ENABLED     false
+#define SCHED_4_RELAY       1
+#define SCHED_4_HOUR        0
+#define SCHED_4_MIN         0
+
+// Restart 6
+#define SCHED_5_ENABLED     false
+#define SCHED_5_RELAY       2
+#define SCHED_5_HOUR        0
+#define SCHED_5_MIN         0
+
+// Restart 7
+#define SCHED_6_ENABLED     false
+#define SCHED_6_RELAY       1
+#define SCHED_6_HOUR        0
+#define SCHED_6_MIN         0
+
+// Restart 8
+#define SCHED_7_ENABLED     false
+#define SCHED_7_RELAY       3
+#define SCHED_7_HOUR        0
+#define SCHED_7_MIN         0
+
+// Restart 9
+#define SCHED_8_ENABLED     false
+#define SCHED_8_RELAY       2
+#define SCHED_8_HOUR        0
+#define SCHED_8_MIN         0
+
+// Restart 10
+#define SCHED_9_ENABLED     false
+#define SCHED_9_RELAY       1
+#define SCHED_9_HOUR        0
+#define SCHED_9_MIN         0
+
+// ============================================================
+// PING MONITOR (automatically restarts the router if there's no internet)
+// ============================================================
+#define PING_HOST           "8.8.8.8"
+#define PING_INTERVAL       300     // seconds between checks
+#define PING_THRESHOLD      3       // consecutive failures before restarting
+#define PING_RELAY          0       // which relay is the router
+
+#endif
