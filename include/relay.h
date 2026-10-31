@@ -5,9 +5,13 @@
 #include "config.h"
 #include "storage.h"
 #include "log.h"
+#include "util.h"
 
+// Call as early as possible in setup(): until the pins are driven, the relays
+// sit in their inactive state, which powers the equipment off.
 inline void relayInit() {
     for (int i = 0; i < RELAY_COUNT; i++) {
+        digitalWrite(appConfig.relays[i].pin, RELAY_ACTIVE);   // set level before enabling output
         pinMode(appConfig.relays[i].pin, OUTPUT);
         digitalWrite(appConfig.relays[i].pin, RELAY_ACTIVE);
         appConfig.relays[i].restarting = false;
@@ -19,34 +23,34 @@ inline void relayInit() {
     }
 }
 
-inline void relayRestart(int id) {
-    if (id < 0 || id >= RELAY_COUNT) return;
-    if (appConfig.relays[id].restarting) return;
+// Starts a power cycle. Must be called from loop() context (see actions.h).
+// Returns false if the id is invalid or that relay is already restarting.
+inline bool relayRestart(int id, const char *reason) {
+    if (id < 0 || id >= RELAY_COUNT) return false;
+    RelayConfig &r = appConfig.relays[id];
+    if (r.restarting) return false;
 
-    appConfig.relays[id].restarting = true;
-    appConfig.relays[id].restartStart = millis();
-    digitalWrite(appConfig.relays[id].pin, RELAY_INACTIVE);
-    char buf[64];
-    snprintf(buf, sizeof(buf), "Relay %s restarting (OFF %ds)", appConfig.relays[id].name, appConfig.relays[id].restartSec);
-    logAdd(buf);
-    Serial.printf("[Relay] %s -> RESTARTING (OFF %ds)\n",
-        appConfig.relays[id].name,
-        appConfig.relays[id].restartSec);
+    unsigned long now = millis();
+    r.restarting = true;
+    r.restartStart = now ? now : 1;
+    r.lastRestart = r.restartStart;
+    r.lastReason = reason ? reason : "";
+    if (r.restartCount < 0xFFFF) r.restartCount++;
+    digitalWrite(r.pin, RELAY_INACTIVE);
+    logAddf("%s: power OFF for %ds (%s)", r.name, r.restartSec, r.lastReason);
+    return true;
 }
 
+// Called every loop(); turns relays back on when their time is up.
 inline void relayUpdate() {
+    unsigned long now = millis();
     for (int i = 0; i < RELAY_COUNT; i++) {
-        if (!appConfig.relays[i].restarting) continue;
-
-        unsigned long elapsed = (millis() - appConfig.relays[i].restartStart) / 1000;
-        if (elapsed >= (unsigned long)appConfig.relays[i].restartSec) {
-            digitalWrite(appConfig.relays[i].pin, RELAY_ACTIVE);
-            appConfig.relays[i].restarting = false;
-            char buf[64];
-            snprintf(buf, sizeof(buf), "Relay %s ON (restart complete)", appConfig.relays[i].name);
-            logAdd(buf);
-            Serial.printf("[Relay] %s -> ON (restart complete)\n",
-                appConfig.relays[i].name);
+        RelayConfig &r = appConfig.relays[i];
+        if (!r.restarting) continue;
+        if (now - r.restartStart >= (unsigned long)r.restartSec * 1000UL) {
+            digitalWrite(r.pin, RELAY_ACTIVE);
+            r.restarting = false;
+            logAddf("%s: power back ON", r.name);
         }
     }
 }
@@ -58,27 +62,32 @@ inline bool relayAnyRestarting() {
     return false;
 }
 
+// Seconds left in the current restart, rounded up (0 if not restarting).
 inline int relayGetRemaining(int id) {
     if (id < 0 || id >= RELAY_COUNT) return 0;
-    if (!appConfig.relays[id].restarting) return 0;
-    unsigned long elapsed = (millis() - appConfig.relays[id].restartStart) / 1000;
-    int remain = appConfig.relays[id].restartSec - (int)elapsed;
-    return remain > 0 ? remain : 0;
+    const RelayConfig &r = appConfig.relays[id];
+    if (!r.restarting) return 0;
+    unsigned long elapsed = millis() - r.restartStart;
+    unsigned long total = (unsigned long)r.restartSec * 1000UL;
+    if (elapsed >= total) return 0;
+    return (int)((total - elapsed + 999UL) / 1000UL);
 }
 
 inline String relayStatusJson() {
     String json = "[";
     for (int i = 0; i < RELAY_COUNT; i++) {
+        const RelayConfig &r = appConfig.relays[i];
         if (i > 0) json += ",";
-        bool on = !appConfig.relays[i].restarting;
-        int remaining = relayGetRemaining(i);
         json += "{\"id\":" + String(i);
-        json += ",\"name\":\"" + String(appConfig.relays[i].name) + "\"";
-        json += ",\"pin\":" + String(appConfig.relays[i].pin);
-        json += ",\"restartSec\":" + String(appConfig.relays[i].restartSec);
-        json += ",\"on\":" + String(on ? "true" : "false");
-        json += ",\"restarting\":" + String(appConfig.relays[i].restarting ? "true" : "false");
-        json += ",\"remaining\":" + String(remaining);
+        json += ",\"name\":\"" + jsonEscape(r.name) + "\"";
+        json += ",\"pin\":" + String(r.pin);
+        json += ",\"restartSec\":" + String(r.restartSec);
+        json += ",\"on\":" + String(r.restarting ? "false" : "true");
+        json += ",\"restarting\":" + String(r.restarting ? "true" : "false");
+        json += ",\"remaining\":" + String(relayGetRemaining(i));
+        json += ",\"restarts\":" + String(r.restartCount);
+        json += ",\"lastAgo\":" + String(secondsSince(r.lastRestart));
+        json += ",\"lastReason\":\"" + jsonEscape(r.lastReason) + "\"";
         json += "}";
     }
     json += "]";

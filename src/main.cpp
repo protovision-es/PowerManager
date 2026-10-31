@@ -1,18 +1,25 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <ArduinoOTA.h>
+#include <ESPmDNS.h>
+#include <esp_system.h>
 
 #include "config.h"
 #include "storage.h"
+#include "log.h"
 #include "relay.h"
 #include "wol.h"
 #include "scheduler.h"
 #include "ping.h"
-#include "log.h"
+#include "actions.h"
 #include "webserver.h"
 
-static bool ledBlinkState = false;
-static unsigned long lastLedToggle = 0;
+#define HOSTNAME "powermanager"
+
+// Heartbeat: a short flash of STATUS_LED_ON_MS every STATUS_LED_BLINK_INTERVAL ms
+#ifndef STATUS_LED_ON_MS
+#define STATUS_LED_ON_MS 80
+#endif
 
 void statusLedInit() {
     pinMode(STATUS_LED_PIN, OUTPUT);
@@ -26,13 +33,9 @@ void statusLedUpdate() {
         return;
     }
 
-    // Otherwise, blink continuously as a heartbeat (program is alive).
-    unsigned long now = millis();
-    if (now - lastLedToggle >= STATUS_LED_BLINK_INTERVAL) {
-        lastLedToggle = now;
-        ledBlinkState = !ledBlinkState;
-        digitalWrite(STATUS_LED_PIN, ledBlinkState ? HIGH : LOW);
-    }
+    // Otherwise, a short heartbeat flash (program is alive).
+    unsigned long phase = millis() % (unsigned long)STATUS_LED_BLINK_INTERVAL;
+    digitalWrite(STATUS_LED_PIN, phase < STATUS_LED_ON_MS ? HIGH : LOW);
 }
 
 const char* wifiStatusStr(wl_status_t s) {
@@ -48,6 +51,21 @@ const char* wifiStatusStr(wl_status_t s) {
     }
 }
 
+const char* resetReasonStr() {
+    switch (esp_reset_reason()) {
+        case ESP_RST_POWERON:   return "power on";
+        case ESP_RST_SW:        return "software restart / OTA";
+        case ESP_RST_PANIC:     return "crash (panic)";
+        case ESP_RST_INT_WDT:
+        case ESP_RST_TASK_WDT:
+        case ESP_RST_WDT:       return "watchdog";
+        case ESP_RST_BROWNOUT:  return "brownout (low voltage)";
+        case ESP_RST_EXT:       return "reset button";
+        case ESP_RST_DEEPSLEEP: return "deep sleep";
+        default:                return "unknown";
+    }
+}
+
 void connectWiFi() {
     Serial.printf("[WiFi] SSID: '%s'\n", WIFI_SSID);
 
@@ -59,6 +77,9 @@ void connectWiFi() {
     WiFi.disconnect(true);
     delay(100);
     WiFi.mode(WIFI_STA);
+    WiFi.setHostname(HOSTNAME);
+    WiFi.setSleep(false);          // faster web responses and reliable WoL
+    WiFi.setAutoReconnect(true);
     delay(100);
 
     if (strlen(WIFI_IP) > 0) {
@@ -77,38 +98,77 @@ void connectWiFi() {
     unsigned long start = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - start < WIFI_CONNECT_TIMEOUT) {
         Serial.printf("[WiFi] Status: %s (%d)\n", wifiStatusStr(WiFi.status()), WiFi.status());
-        delay(1000);
+        delay(500);
     }
 
     if (WiFi.status() == WL_CONNECTED) {
         Serial.printf("[WiFi] Connected! IP: %s RSSI: %d dBm\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
     } else {
-        Serial.printf("[WiFi] FAILED! Final: %s (%d)\n", wifiStatusStr(WiFi.status()), WiFi.status());
+        Serial.printf("[WiFi] FAILED! Final: %s (%d). Will keep retrying.\n", wifiStatusStr(WiFi.status()), WiFi.status());
+    }
+}
+
+// Logs WiFi drops/recoveries and nudges a reconnect if auto-reconnect stalls.
+void wifiWatchdog() {
+    static bool wasConnected = true;
+    static unsigned long disconnectedSince = 0;
+    static unsigned long lastRetry = 0;
+    unsigned long now = millis();
+    bool connected = WiFi.status() == WL_CONNECTED;
+
+    if (connected) {
+        if (!wasConnected) {
+            logAddf("WiFi reconnected after %lus (RSSI %d dBm)",
+                (now - disconnectedSince) / 1000UL, WiFi.RSSI());
+        }
+        wasConnected = true;
+        return;
+    }
+
+    if (wasConnected) {
+        wasConnected = false;
+        disconnectedSince = now;
+        lastRetry = now;
+        logAdd("WiFi connection lost");
+    }
+    if (now - lastRetry >= 30000UL) {
+        lastRetry = now;
+        Serial.println("[WiFi] Reconnecting...");
+        WiFi.reconnect();
     }
 }
 
 void setup() {
     Serial.begin(115200);
-    delay(500);
+    delay(200);
     Serial.println("\n=== PowerManager ===");
 
-    statusLedInit();
+    // Relays first: until the pins are driven the relays are inactive, which
+    // cuts power to the equipment. Doing this before the (up to 15 s) WiFi
+    // connection keeps that blip to a fraction of a second on every reboot.
     initConfig();
+    relayInit();
+
+    statusLedInit();
+    logInit();
+    logAddf("Boot (%s)", resetReasonStr());
 
     connectWiFi();
 
-    relayInit();
     wolInit();
     schedulerInit();
     pingInit();
     webserverInit();
 
-    ArduinoOTA.setHostname("powermanager");
+    ArduinoOTA.setHostname(HOSTNAME);
     ArduinoOTA.onStart([]() { Serial.println("[OTA] Start"); });
     ArduinoOTA.onEnd([]() { Serial.println("[OTA] End"); });
-    ArduinoOTA.onProgress([](unsigned int p, unsigned int t) { Serial.printf("[OTA] Progress: %u%%\r", (p / (t / 100))); });
+    ArduinoOTA.onProgress([](unsigned int p, unsigned int t) {
+        if (t) Serial.printf("[OTA] Progress: %u%%\r", (unsigned)((uint64_t)p * 100 / t));
+    });
     ArduinoOTA.onError([](ota_error_t e) { Serial.printf("[OTA] Error [%u]\n", e); });
     ArduinoOTA.begin();
+    MDNS.addService("http", "tcp", WEB_PORT);   // ArduinoOTA already started mDNS
 
     Serial.println("=== Ready ===");
 }
@@ -116,27 +176,18 @@ void setup() {
 void loop() {
     unsigned long now = millis();
 
+    actionsProcess();     // actions requested from the web server
+    relayUpdate();        // checked every loop for accurate restart durations
+
     static unsigned long lastScheduler = 0;
     if (now - lastScheduler >= 1000) {
         lastScheduler = now;
         schedulerUpdate();
-        relayUpdate();
     }
 
     statusLedUpdate();
     ArduinoOTA.handle();
-    pingUpdate();
-
-    static unsigned long lastWifiCheck = 0;
-    if (now - lastWifiCheck >= 30000) {
-        lastWifiCheck = now;
-        if (WiFi.status() != WL_CONNECTED) {
-            Serial.printf("[WiFi] Reconnecting...\n");
-            WiFi.disconnect();
-            delay(100);
-            WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-        }
-    }
+    wifiWatchdog();
 
     delay(10);
 }

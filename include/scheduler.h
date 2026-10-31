@@ -6,58 +6,70 @@
 #include "storage.h"
 #include "relay.h"
 #include "log.h"
+#include "util.h"
+
+static bool schedClockSynced = false;
 
 inline void schedulerInit() {
-    configTime(appConfig.gmtOffset * 3600, 0, appConfig.ntpServer);
-    Serial.println("[Scheduler] NTP synced");
+    if (strlen(appConfig.tz) > 0) {
+        // POSIX TZ string: local time with automatic daylight saving
+        configTzTime(appConfig.tz, appConfig.ntpServer);
+        Serial.printf("[Scheduler] NTP %s, TZ %s\n", appConfig.ntpServer, appConfig.tz);
+    } else {
+        configTime(appConfig.gmtOffset * 3600, 0, appConfig.ntpServer);
+        Serial.printf("[Scheduler] NTP %s, GMT%+ld (no DST, set NTP_TZ)\n",
+            appConfig.ntpServer, appConfig.gmtOffset);
+    }
 }
 
+// Called once per second from loop().
 inline void schedulerUpdate() {
-    struct tm timeinfo;
-    if (!getLocalTime(&timeinfo)) return;
+    struct tm t;
+    if (!timeNow(t)) return;   // clock not synced yet: schedules wait
 
-    int nowH = timeinfo.tm_hour;
-    int nowM = timeinfo.tm_min;
+    if (!schedClockSynced) {
+        schedClockSynced = true;
+        char buf[24];
+        strftime(buf, sizeof(buf), "%d/%m/%Y %H:%M", &t);
+        logAddf("Clock synced (NTP): %s", buf);
+    }
 
     for (int i = 0; i < appConfig.scheduleCount; i++) {
         ScheduleEntry &s = appConfig.schedules[i];
         if (!s.enabled) continue;
-
-        if (nowH == 0 && nowM == 0) {
-            s.ranToday = false;
-        }
-
-        if (!s.ranToday && nowH == s.hour && nowM == s.min) {
-            relayRestart(s.relay);
-            s.ranToday = true;
-            char buf[64];
-            snprintf(buf, sizeof(buf), "Scheduled: %s at %02d:%02d", appConfig.relays[s.relay].name, s.hour, s.min);
-            logAdd(buf);
-            Serial.printf("[Scheduler] Scheduled restart: %s at %02d:%02d\n",
-                appConfig.relays[s.relay].name, s.hour, s.min);
+        // lastRunYday guarantees one run per day, even though this runs
+        // 60 times during the matching minute.
+        if (t.tm_hour == s.hour && t.tm_min == s.min && s.lastRunYday != t.tm_yday) {
+            s.lastRunYday = t.tm_yday;
+            if (!relayRestart(s.relay, "schedule")) {
+                logAddf("Schedule %02d:%02d skipped: %s already restarting",
+                    s.hour, s.min, appConfig.relays[s.relay].name);
+            }
         }
     }
 }
 
 inline String scheduleStatusJson() {
-    struct tm timeinfo;
-    String currentTime = "??:??";
-    if (getLocalTime(&timeinfo)) {
-        char buf[6];
-        snprintf(buf, sizeof(buf), "%02d:%02d", timeinfo.tm_hour, timeinfo.tm_min);
-        currentTime = buf;
-    }
+    struct tm t;
+    bool synced = timeNow(t);
+    char now[6] = "??:??";
+    if (synced) snprintf(now, sizeof(now), "%02d:%02d", t.tm_hour, t.tm_min);
 
-    String json = "{\"time\":\"" + currentTime + "\",\"schedules\":[";
+    String json = "{\"time\":\"";
+    json += now;
+    json += "\",\"synced\":";
+    json += synced ? "true" : "false";
+    json += ",\"schedules\":[";
     for (int i = 0; i < appConfig.scheduleCount; i++) {
         if (i > 0) json += ",";
-        ScheduleEntry &s = appConfig.schedules[i];
+        const ScheduleEntry &s = appConfig.schedules[i];
         json += "{\"id\":" + String(i);
         json += ",\"relay\":" + String(s.relay);
-        json += ",\"relayName\":\"" + String(appConfig.relays[s.relay].name) + "\"";
+        json += ",\"relayName\":\"" + jsonEscape(appConfig.relays[s.relay].name) + "\"";
         json += ",\"hour\":" + String(s.hour);
         json += ",\"min\":" + String(s.min);
         json += ",\"enabled\":" + String(s.enabled ? "true" : "false");
+        json += ",\"ranToday\":" + String((synced && s.lastRunYday == t.tm_yday) ? "true" : "false");
         json += "}";
     }
     json += "]}";

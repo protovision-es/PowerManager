@@ -7,11 +7,14 @@ An ESP32-based power management system for remotely restarting network gear. It 
 - **4 relays** — individually configurable restart (power-cycle) duration per relay
 - **Wake on LAN** — power on remote machines by sending magic packets
 - **Scheduled restarts** — up to 10 daily schedules for restarting relays
-- **Ping monitor** — automatically restarts the router when the internet connection drops
-- **Web dashboard** — responsive, auto-refreshing every 3 seconds, with a light/dark theme, live restart countdowns, connection-loss detection, and confirmation prompts before restarting a relay. Built with plain HTML/CSS/JavaScript — no frameworks, no build step, no CDN
+- **Internet monitor** — the device checks the connection every 15 s on its own (no browser needed) and keeps a minute-by-minute history of the last 7 days in flash, so it survives reboots and updates. Pick any moment of the week and the dashboard tells you whether the internet was working then (no internet, unstable, ESP32 without WiFi, or no data). Also: uptime, latency (avg, p95, jitter), WiFi signal, a navigable latency chart (1 h / 6 h / 24 h / 7 days), a 7×24 hourly heatmap, the latency distribution and the outage list. It restarts the router after 15 min without internet, then pauses while it boots
+- **Web dashboard** — responsive, auto-refreshing every 3 seconds, with a light/dark theme, live restart countdowns, last restart per relay (when and why), time until the next scheduled restart, connection-loss detection, and confirmation prompts before restarting a relay. Built with plain HTML/CSS/JavaScript — no frameworks, no build step, no CDN
+- **JSON API** — `POST` endpoints for integrations (Home Assistant, scripts) plus plain `GET` links for shortcuts and NFC tags
+- **Optional login** — HTTP Basic Auth for the dashboard and API
 - **API reference page** — a built-in `/api-doc` page listing every endpoint with ready-to-copy URLs
-- **Status LED** — blinks continuously as a heartbeat, and switches to solid ON while any relay is mid-restart
-- **WiFi** — static IP with automatic reconnection
+- **Status LED** — a short heartbeat flash every second, and switches to solid ON while any relay is mid-restart
+- **WiFi** — static IP, automatic reconnection, drops and recoveries recorded in the log
+- **Local time** — NTP with a POSIX time zone, so schedules follow daylight saving
 
 ## Hardware
 
@@ -31,6 +34,8 @@ An ESP32-based power management system for remotely restarting network gear. It 
 
 Adjust these two if your relay board is active-low.
 
+> **Note on reboots:** with this logic the equipment is powered only while the ESP32 drives the relay. The firmware sets the relay pins first thing at boot, so an ESP32 reboot (or OTA update) cuts power for well under a second, but it is not zero. If that matters, wire the equipment to the relay's **NC** contact and swap `RELAY_ACTIVE`/`RELAY_INACTIVE`: then a dead or rebooting ESP32 leaves everything powered.
+
 ### Status LED
 
 | Element | GPIO (`config.h`) |
@@ -39,7 +44,7 @@ Adjust these two if your relay board is active-low.
 
 Wiring: a single LED with its own resistor (330 ohm) between `STATUS_LED_PIN` and GND.
 
-- Normally, the LED **blinks continuously** while the firmware is running (a heartbeat indicator), toggling every `STATUS_LED_BLINK_INTERVAL` ms.
+- Normally, the LED gives a **short flash** (`STATUS_LED_ON_MS`) every `STATUS_LED_BLINK_INTERVAL` ms while the firmware is running (a heartbeat indicator).
 - As soon as **any** relay enters a restart cycle (off, waiting to turn back on), the LED switches to **solid ON**, and goes back to blinking once every relay is back ON.
 
 ## Getting Started
@@ -89,7 +94,8 @@ All configuration happens at compile time in `include/config.h`. There's no file
 
 ```c
 #define STATUS_LED_PIN            2      // GPIO for the status LED
-#define STATUS_LED_BLINK_INTERVAL 100    // ms between each blink (heartbeat)
+#define STATUS_LED_BLINK_INTERVAL 1000   // ms between heartbeat flashes (1 per second)
+#define STATUS_LED_ON_MS          80     // duration of each flash (ms)
 ```
 
 ### WiFi
@@ -139,77 +145,74 @@ Up to 10 entries. Each entry means "restart this relay at this time".
 #define SCHED_0_MIN      44      // Minute (0-59)
 ```
 
-### Ping monitor
+### Time zone
+
+```c
+#define NTP_SERVER          "pool.ntp.org"
+#define NTP_TZ              "CET-1CEST,M3.5.0,M10.5.0/3"   // POSIX TZ, handles DST
+#define NTP_GMT_OFFSET      0                               // only used if NTP_TZ is ""
+```
+
+Schedule times and log timestamps are in this local time. Until the clock is synced, schedules wait and the log shows uptime (`+42s`) instead of a date.
+
+### Dashboard login (optional)
+
+```c
+#define WEB_AUTH_USER       ""      // empty = no login
+#define WEB_AUTH_PASS       ""
+```
+
+When set, every page and endpoint needs HTTP Basic Auth (`curl -u user:pass ...`).
+
+### Internet monitor
 
 ```c
 #define PING_HOST       "8.8.8.8"
-#define PING_INTERVAL   300     // Seconds between checks
-#define PING_THRESHOLD  3       // Consecutive failures before restarting
+#define PING_PROBE_SEC  15      // Seconds between checks (must divide 60)
+#define PING_RESTART_AFTER_MIN 15   // Minutes without internet before restarting the router
 #define PING_RELAY      0       // Which relay is the router
+#define PING_GRACE_MIN  5       // Minutes to wait after restarting the router
 ```
+
+Each check is a TCP connection to `PING_HOST` port 53 (works with public DNS servers like `8.8.8.8` or `1.1.1.1`), retried once before it counts as failed. A background task on the ESP32 does it, so the history is recorded whether or not the dashboard is open.
+
+Checks are grouped per minute: average latency, how many checks failed, whether the ESP32 itself had lost WiFi, and the average WiFi signal (3 bytes per minute). The last 7 days (10,080 minutes, ~31 KB of RAM) are saved to the LittleFS data partition every 10 minutes and after each outage, so they survive reboots and OTA updates. The last 40 outages (2+ consecutive failed checks) are saved too. Checks made before the clock is synced (e.g. booting during an outage) are dated and added once NTP answers.
+
+To answer "was it the internet?": pick a date and time in the dashboard, click the chart, an hour of the heatmap or an outage. The verdict says whether the internet was working at that minute, the exact span of any outage or intermittent drop around it, whether the ESP32 had lost WiFi (pointing at the WiFi/router rather than the line), or that there is no data (device off).
+
+Manual checks from the dashboard are not stored and never trigger a restart. `PING_PROBE_SEC`, `PING_RESTART_AFTER_MIN`, `PING_GRACE_MIN` and the auth settings are optional: older `config.h` files without them still build (without `PING_RESTART_AFTER_MIN`, the old `PING_INTERVAL * PING_THRESHOLD` seconds are used). Needs the default partition table (it has the data partition); without it the history works but is lost on reboot.
 
 ## API Reference
 
-The server listens on port 80. `GET` endpoints returning `JSON` are meant for integrations; the ones marked `HTML` open a human-readable confirmation page and run the action as soon as the URL is requested — they work equally well opened in a browser, called from a shortcut/NFC tag, or hit with `curl`/`fetch`. A live, browsable version of this reference is also served at `/api-doc`.
+The server listens on port 80. `JSON` endpoints are meant for integrations; actions use `POST` and answer `{"ok":true}` or `{"ok":false,"error":"..."}` with a 4xx/5xx status. The `GET` endpoints marked `HTML` open a human-readable confirmation page and run the action as soon as the URL is requested — for a browser, a phone shortcut or an NFC tag. A live, browsable version of this reference is also served at `/api-doc`.
 
-### `GET /api/status` — JSON
+### `POST /api/relays/restart?id=X` — JSON
 
-Full system status: relays, WoL devices, ping, and the device clock.
+Restarts a relay. Errors: `400` invalid id, `409` already restarting.
 
-**Response:**
-```json
-{
-  "uptime": 3661,
-  "datetime": "Mon 29 Jul 2026  14:30:00",
-  "ip": "192.168.1.50",
-  "wifi_rssi": -45,
-  "relays": [
-    {
-      "id": 0,
-      "name": "Router",
-      "pin": 16,
-      "restartSec": 10,
-      "on": true,
-      "restarting": false,
-      "remaining": 0
-    }
-  ],
-  "wol": [
-    {
-      "id": 0,
-      "name": "My Desktop PC",
-      "mac": "AA:BB:CC:DD:EE:FF"
-    }
-  ],
-  "ping": {
-    "host": "8.8.8.8",
-    "interval": 300,
-    "threshold": 3,
-    "relayTrigger": 0,
-    "failCount": 0,
-    "lastResult": true,
-    "ms": 24
-  }
-}
-```
+### `POST /api/wol/wake?id=X` — JSON
 
-### `GET /api/relays/restart?id=X` — HTML
+Sends a Wake-on-LAN magic packet. Errors: `400` invalid id, `503` WiFi not connected.
 
-Restarts a relay (turns it off for X seconds, then back on) and returns a confirmation page with a live countdown. The restart is triggered as soon as the request is received, before the page even renders.
+### `POST /api/ping/check` — JSON
 
-**Parameters:**
-- `id` (query) — relay index (0-3)
+Runs an internet check now; the result shows up in `ping` of `/api/status` a few seconds later.
 
-An invalid `id` returns an HTML error page (HTTP 400) instead of triggering a restart.
+### `GET /api/ping/history` — binary
 
-### `GET /api/wol/wake?id=X` — HTML
+Minute-by-minute history of the last 7 days. Optional `?from=<epoch minute>` returns only the minutes from there on.
 
-Sends a Wake-on-LAN magic packet to a device and returns an HTML confirmation page.
+20-byte little-endian header: `"PMH2"`, version (`2`), seconds between checks, 2 reserved bytes, `now` (epoch seconds, u32), first minute (epoch minute, u32), count (u32). Then 3 bytes per minute:
 
-**Parameters:**
-- `id` (query) — device index (0-4)
+| Byte | Meaning |
+|------|---------|
+| `lat` | `0` = no successful check; `1-150` → `(v-1)*2` ms; `151-255` → `300+(v-151)*25` ms |
+| `flags` | bits 0-2 checks done, bits 3-5 failed, bit 6 = ESP32 had no WiFi (all `0` = no data) |
+| `rssi` | average WiFi signal, signed dBm (`0` = unknown) |
 
-An invalid `id` returns an HTML error page (HTTP 400).
+### `GET /api/ping/outages` — JSON
+
+Last 40 outages, newest first: `[startEpoch, seconds, routerRestarted, noWifi]` (start `0` = before clock sync).
 
 ### `GET /api/schedule` — JSON
 
@@ -219,6 +222,7 @@ The configured restart schedules and the device's current time.
 ```json
 {
   "time": "14:30",
+  "synced": true,
   "schedules": [
     {
       "id": 0,
@@ -226,7 +230,8 @@ The configured restart schedules and the device's current time.
       "relayName": "Router",
       "hour": 14,
       "min": 44,
-      "enabled": true
+      "enabled": true,
+      "ranToday": false
     }
   ]
 }
@@ -239,11 +244,11 @@ The last 50 system events, oldest first.
 **Response:**
 ```json
 [
-  {"t": "29/07 14:30:12", "m": "Relay Router restarting (OFF 10s)"},
-  {"t": "29/07 14:30:22", "m": "Relay Router ON (restart complete)"},
-  {"t": "29/07 14:31:00", "m": "WoL sent to My Desktop PC"},
-  {"t": "29/07 14:35:00", "m": "Scheduled: Server at 05:00"},
-  {"t": "29/07 14:40:00", "m": "Ping failed 3 times, restarting Router"}
+  {"t": "29/07 14:30:12", "m": "Router: power OFF for 10s (web)"},
+  {"t": "29/07 14:30:22", "m": "Router: power back ON"},
+  {"t": "29/07 14:31:00", "m": "WoL magic packet sent to My Desktop PC"},
+  {"t": "29/07 14:35:00", "m": "Ping 8.8.8.8 failed (1/3)"},
+  {"t": "29/07 14:40:00", "m": "No internet after 3 checks, restarting Router"}
 ]
 ```
 
@@ -257,7 +262,7 @@ The API reference page described above.
 
 ### Any other route
 
-Falls back to the dashboard (SPA-style fallback via `onNotFound`).
+Unknown `/api/...` paths return a JSON `404`; anything else falls back to the dashboard.
 
 ## Project Structure
 
@@ -266,7 +271,10 @@ PowerManager/
 ├── include/
 │   ├── config.h.example  # Configuration template (no personal data, tracked in git)
 │   ├── config.h          # Your real configuration (WiFi, relays, WoL, schedules, ping) — gitignored
-│   ├── storage.h         # Config structs and runtime config loading
+│   ├── storage.h         # Config structs, optional-setting defaults, config loading
+│   ├── util.h            # Time, uptime and JSON/HTML escaping helpers
+│   ├── log.h             # Thread-safe event log (ring buffer)
+│   ├── actions.h         # Queue that hands web requests over to loop()
 │   ├── relay.h           # Relay control (init, restart, update, JSON)
 │   ├── wol.h             # Wake on LAN (init, send, JSON)
 │   ├── scheduler.h       # Daily restart scheduling

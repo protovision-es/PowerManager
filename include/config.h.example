@@ -32,14 +32,23 @@
 // Switches to solid ON while any relay is currently in the middle
 // of a restart (relay off, waiting to turn back on).
 #define STATUS_LED_PIN            2      // GPIO for the status LED
-#define STATUS_LED_BLINK_INTERVAL 100    // ms between each blink (heartbeat)
+#define STATUS_LED_BLINK_INTERVAL 1000   // ms between heartbeat flashes (1 per second)
+#define STATUS_LED_ON_MS          80     // duration of each flash (ms)
 
 // --- NTP ---
 #define NTP_SERVER          "pool.ntp.org"
-#define NTP_GMT_OFFSET      0
+#define NTP_GMT_OFFSET      0       // only used if NTP_TZ is empty (no DST)
+// POSIX time zone, handles daylight saving automatically. Examples:
+//   Spain (peninsula) "CET-1CEST,M3.5.0,M10.5.0/3"   UK "GMT0BST,M3.5.0/1,M10.5.0"
+//   New York "EST5EDT,M3.2.0,M11.1.0"                UTC ""
+#define NTP_TZ              "CET-1CEST,M3.5.0,M10.5.0/3"
 
 // --- Web Server ---
 #define WEB_PORT            80
+// Optional login for the dashboard and API (HTTP Basic Auth).
+// Leave both empty to disable. Shortcuts/curl then need: curl -u user:pass ...
+#define WEB_AUTH_USER       ""
+#define WEB_AUTH_PASS       ""
 
 // ============================================================
 // RELAYS
@@ -162,8 +171,9 @@
 // PING MONITOR (automatically restarts the router if there's no internet)
 // ============================================================
 #define PING_HOST           "8.8.8.8"
-#define PING_INTERVAL       300     // seconds between checks
-#define PING_THRESHOLD      3       // consecutive failures before restarting
+#define PING_PROBE_SEC      15      // seconds between checks; must divide 60 (10/12/15/20/30/60)
+#define PING_RESTART_AFTER_MIN 15   // minutes without internet before restarting the router
 #define PING_RELAY          0       // which relay is the router
+#define PING_GRACE_MIN      5       // minutes to wait after restarting the router before checking again
 
 #endif
